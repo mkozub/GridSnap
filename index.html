@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GridSnap</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>GridSnap</h1>
+            <p class="subtitle">Upload a screenshot of a grid to auto-fill a Smartsheet</p>
+        </header>
+
+        <div class="disclaimer">
+            <p><strong>Warning:</strong> Do not upload sensitive or customer data.</p>
+            <p><strong>Warning:</strong> This will delete all existing information on your grid.</p>
+            <p><strong>Note:</strong> Supports basic 2D grids only — no merged cells, formatting, or formulas.</p>
+        </div>
+
+        <div class="workflow-container">
+            <!-- Step 1: Sheet ID Input -->
+            <section class="step" id="step1">
+                <h2>Step 1: Enter Smartsheet ID</h2>
+                <div class="input-group">
+                    <input type="text" id="sheet-id" placeholder="Enter Smartsheet Sheet ID">
+                    <button id="verify-sheet">Verify</button>
+                </div>
+                <div id="sheet-verification-result"></div>
+                <p class="help-text">
+                    You can find the sheet ID under File > Properties.
+                </p>
+            </section>
+
+            <!-- Step 2: Image Upload -->
+            <section class="step" id="step2" style="display: none;">
+                <h2>Step 2: Upload Grid Screenshot</h2>
+                <div class="file-upload-container">
+                    <div class="drop-area" id="drop-area">
+                        <p>Drag & drop image here or</p>
+                        <input type="file" id="image-upload" accept="image/png,image/jpeg,image/jpg,image/webp" hidden>
+                        <button id="select-file-btn">Select File</button>
+                    </div>
+                    <div id="image-preview-container" style="display: none;">
+                        <img id="image-preview" alt="Preview">
+                        <button id="remove-image">Remove</button>
+                    </div>
+                </div>
+                <div class="constraints">
+                    <p>Constraints:</p>
+                    <ul>
+                        <li>Max file size: 20 MB</li>
+                        <li>Accepted formats: JPG, PNG, WebP</li>
+                    </ul>
+                </div>
+                <button id="extract-headers" class="action-btn">Extract Column Headers</button>
+                <div id="extracting-status" class="status-message" style="display: none;">
+                    <div class="spinner"></div>
+                    <p>Extracting column headers...</p>
+                </div>
+            </section>
+
+            <!-- Step 3: Column Configuration -->
+            <section class="step" id="step3" style="display: none;">
+                <h2>Step 3: Configure Columns</h2>
+                <div id="headers-container">
+                    <div class="headers-list">
+                        <!-- Column Headers will be added here dynamically -->
+                    </div>
+                </div>
+                <button id="confirm-headers" class="action-btn">Confirm Columns & Push to Sheet</button>
+                <div id="updating-headers-status" class="status-message" style="display: none;">
+                    <div class="spinner"></div>
+                    <p>Updating column headers in Smartsheet...</p>
+                </div>
+                <div id="columns-success-status" class="status-message success" style="display: none;">
+                    <span class="success-indicator" style="width: 16px; height: 16px; display: inline-block; border-radius: 50%; background: #3ec97a; margin-right: 8px;"></span>
+                    <span>Columns Successfully Pushed to Smartsheet.</span>
+                </div>
+                <div id="analyzing-grid-status" class="status-message" style="display: none;">
+                    <div class="spinner"></div>
+                    <p>Analyzing image and processing grid data…</p>
+                </div>
+            </section>
+
+            <!-- Step 4: Grid Fill Data -->
+            <section class="step" id="step4" style="display: none;">
+                <h2>Step 4: Grid Fill Data</h2>
+                <div id="grid-preview-container" style="display: none;">
+                    <h3>Extracted Grid Data</h3>
+                    <div id="grid-preview" class="json-viewer"></div>
+                    <div class="context-input">
+                        <h3>Additional Context (Optional)</h3>
+                        <textarea id="context" placeholder="Any additional context you want included in the prompt"></textarea>
+                    </div>
+                    <button id="update-sheet" class="action-btn">Confirm Grid & Push to Sheet</button>
+                    <div id="updating-status" class="status-message" style="display: none;">
+                        <div class="spinner"></div>
+                        <p>Pushing data to Smartsheet...</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Step 5: Results -->
+            <section class="step" id="step5" style="display: none;">
+                <h2>Result</h2>
+                <div id="result-message"></div>
+                <button id="start-over" class="secondary-btn">Start Over</button>
+            </section>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Global variables
+            let validSheetId = null;
+            let extractedData = null;
+            let uploadedImage = null;
+            let extractedHeaders = null;
+
+            // Elements
+            const sheetIdInput = document.getElementById('sheet-id');
+            const verifySheetBtn = document.getElementById('verify-sheet');
+            const sheetVerificationResult = document.getElementById('sheet-verification-result');
+            const imageUpload = document.getElementById('image-upload');
+            const selectFileBtn = document.getElementById('select-file-btn');
+            const dropArea = document.getElementById('drop-area');
+            const imagePreviewContainer = document.getElementById('image-preview-container');
+            const imagePreview = document.getElementById('image-preview');
+            const removeImageBtn = document.getElementById('remove-image');
+            const extractHeadersBtn = document.getElementById('extract-headers');
+            const extractingStatus = document.getElementById('extracting-status');
+            const headersContainer = document.querySelector('.headers-list');
+            const confirmHeadersBtn = document.getElementById('confirm-headers');
+            const contextTextarea = document.getElementById('context');
+            const processImageBtn = document.getElementById('process-image');
+            const processingStatus = document.getElementById('processing-status');
+            const dataPreviewContainer = document.getElementById('data-preview-container');
+            const dataPreview = document.getElementById('data-preview');
+            const updateSheetBtn = document.getElementById('update-sheet');
+            const updatingStatus = document.getElementById('updating-status');
+            const resultMessage = document.getElementById('result-message');
+            const startOverBtn = document.getElementById('start-over');
+
+            // Smartsheet column types
+            const columnTypes = [
+                "TEXT_NUMBER",
+                "DATE",
+                "DATETIME",
+                "CONTACT_LIST",
+                "CHECKBOX",
+                "PICKLIST",
+                "DURATION"
+            ];
+
+            // Show specific step and collapse previous ones
+            function showStep(stepNumber) {
+                document.querySelectorAll('.step').forEach((step, index) => {
+                    if (index + 1 < stepNumber) {
+                        step.classList.add('collapsed');
+                        step.style.display = 'block';
+                    } else if (index + 1 === stepNumber) {
+                        step.classList.remove('collapsed');
+                        step.style.display = 'block';
+                    } else {
+                        step.style.display = 'none';
+                    }
+                });
+            }
+
+            // Add click handler for collapsed steps
+            document.querySelectorAll('.step').forEach(step => {
+                step.addEventListener('click', function(e) {
+                    if (this.classList.contains('collapsed')) {
+                        const stepNumber = parseInt(this.id.replace('step', ''));
+                        showStep(stepNumber);
+                    }
+                });
+            });
+
+            // Verify Sheet ID
+            verifySheetBtn.addEventListener('click', async function() {
+                const sheetId = sheetIdInput.value.trim();
+                if (!sheetId) {
+                    sheetVerificationResult.innerHTML = '<div class="error">Please enter a Sheet ID</div>';
+                    return;
+                }
+
+                sheetVerificationResult.innerHTML = '<div class="loading">Verifying sheet...</div>';
+                
+                try {
+                    const response = await fetch('/verify-sheet', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ sheet_id: sheetId })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.valid) {
+                        validSheetId = sheetId;
+                        sheetVerificationResult.innerHTML = `<div class="success">${result.message}</div>`;
+                        showStep(2);
+                    } else {
+                        sheetVerificationResult.innerHTML = `<div class="error">That's not a valid sheet.</div>`;
+                    }
+                } catch (error) {
+                    sheetVerificationResult.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+                }
+            });
+
+            // File Upload Handling
+            selectFileBtn.addEventListener('click', () => {
+                imageUpload.click();
+            });
+
+            imageUpload.addEventListener('change', handleFileSelect);
+
+            // Drag and drop support
+            dropArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropArea.classList.add('highlight');
+            });
+
+            dropArea.addEventListener('dragleave', () => {
+                dropArea.classList.remove('highlight');
+            });
+
+            dropArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropArea.classList.remove('highlight');
+                if (e.dataTransfer.files.length) {
+                    imageUpload.files = e.dataTransfer.files;
+                    handleFileSelect({ target: imageUpload });
+                }
+            });
+
+            function handleFileSelect(e) {
+                const file = e.target.files[0];
+                
+                if (!file) return;
+                
+                // Validate file type
+                const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+                if (!validTypes.includes(file.type)) {
+                    alert('Please select a valid image file (JPG, PNG, or WebP)');
+                    return;
+                }
+                
+                // Validate file size (max 20MB)
+                if (file.size > 20 * 1024 * 1024) {
+                    alert('File size exceeds 20MB limit');
+                    return;
+                }
+                
+                // Preview image
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    imagePreview.src = e.target.result;
+                    uploadedImage = file;
+                    dropArea.style.display = 'none';
+                    imagePreviewContainer.style.display = 'block';
+                };
+                reader.readAsDataURL(file);
+            }
+
+            // Remove image
+            removeImageBtn.addEventListener('click', () => {
+                imageUpload.value = '';
+                uploadedImage = null;
+                imagePreviewContainer.style.display = 'none';
+                dropArea.style.display = 'block';
+            });
+
+            // Extract Headers
+            extractHeadersBtn.addEventListener('click', async function() {
+                if (!uploadedImage) {
+                    alert('Please upload an image first');
+                    return;
+                }
+
+                extractHeadersBtn.disabled = true;
+                extractingStatus.style.display = 'flex';
+                
+                const formData = new FormData();
+                formData.append('image', uploadedImage);
+                
+                try {
+                    const response = await fetch('/extract-headers', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.error) {
+                        throw new Error(result.error);
+                    }
+                    
+                    extractedHeaders = result.headers;
+                    displayHeaders(extractedHeaders);
+                    showStep(3);
+                    
+                } catch (error) {
+                    alert(`Error extracting headers: ${error.message}`);
+                } finally {
+                    extractHeadersBtn.disabled = false;
+                    extractingStatus.style.display = 'none';
+                }
+            });
+
+            // Display headers for configuration
+            function displayHeaders(headers) {
+                headersContainer.innerHTML = '';
+                headers.forEach((header, index) => {
+                    const headerDiv = document.createElement('div');
+                    headerDiv.className = 'header-item';
+                    headerDiv.innerHTML = `
+                        <div class="header-input">
+                            <label>Column Name</label>
+                            <input type="text" value="${header.name}" data-index="${index}">
+                        </div>
+                        <div class="header-type">
+                            <label>Column Type</label>
+                            <select data-index="${index}">
+                                ${columnTypes.map(type => `
+                                    <option value="${type}" ${type === header.type ? 'selected' : ''}>
+                                        ${type.replace('_', ' ')}
+                                    </option>
+                                `).join('')}
+                            </select>
+                        </div>
+                    `;
+                    headersContainer.appendChild(headerDiv);
+                });
+            }
+
+            // Confirm Headers and Start Grid Extraction
+            let gridFillTriggered = false;
+            confirmHeadersBtn.addEventListener('click', async function() {
+                if (gridFillTriggered) return; // Prevent duplicate triggers
+                gridFillTriggered = true;
+                const headers = Array.from(document.querySelectorAll('.header-item')).map(item => {
+                    const nameInput = item.querySelector('input');
+                    const typeSelect = item.querySelector('select');
+                    return {
+                        name: nameInput.value,
+                        type: typeSelect.value
+                    };
+                });
+                
+                extractedHeaders = headers;
+                console.log('Confirmed headers:', extractedHeaders);
+                
+                // Show loading state for column header update
+                confirmHeadersBtn.disabled = true;
+                document.getElementById('updating-headers-status').style.display = 'flex';
+                document.getElementById('columns-success-status').style.display = 'none';
+                document.getElementById('analyzing-grid-status').style.display = 'none';
+                document.getElementById('grid-preview-container').style.display = 'none';
+                document.getElementById('grid-preview').innerHTML = '';
+                showStep(3);
+                
+                try {
+                    // 1. Update column headers in Smartsheet
+                    const headerResponse = await fetch('/update-column-headers', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            sheet_id: validSheetId,
+                            headers: extractedHeaders
+                        })
+                    });
+                    const headerResult = await headerResponse.json();
+                    if (headerResult.error) {
+                        throw new Error(headerResult.error);
+                    }
+                    // 2. Show green success, then show grid fill loading
+                    document.getElementById('updating-headers-status').style.display = 'none';
+                    document.getElementById('columns-success-status').style.display = 'flex';
+                    document.getElementById('analyzing-grid-status').style.display = 'flex';
+                    document.getElementById('grid-preview-container').style.display = 'none';
+                    // 3. Start grid data extraction
+                    const formData = new FormData();
+                    formData.append('image', uploadedImage);
+                    formData.append('context', contextTextarea.value);
+                    formData.append('headers', JSON.stringify(extractedHeaders));
+                    const gridResponse = await fetch('/process-image', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const gridResult = await gridResponse.json();
+                    console.log('Grid fill result:', gridResult);
+                    console.log('Updating grid preview UI...');
+                    document.getElementById('analyzing-grid-status').style.display = 'none';
+                    document.getElementById('columns-success-status').style.display = 'none';
+                    if (gridResult.error) {
+                        document.getElementById('grid-preview').innerHTML = `<div class='error'>${gridResult.error}</div>`;
+                        document.getElementById('grid-preview-container').style.display = 'block';
+                        document.getElementById('step4').style.display = 'block';
+                        document.getElementById('step4').classList.remove('collapsed');
+                        showStep(4);
+                        throw new Error(gridResult.error);
+                    }
+                    extractedData = gridResult.data;
+                    // 4. Show grid preview and approve button
+                    document.getElementById('grid-preview').innerHTML = `<pre>${JSON.stringify(extractedData, null, 2)}</pre>`;
+                    document.getElementById('grid-preview-container').style.display = 'block';
+                    document.getElementById('step4').style.display = 'block';
+                    document.getElementById('step4').classList.remove('collapsed');
+                    showStep(4);
+                } catch (error) {
+                    console.error('Grid fill error:', error);
+                    alert(`Error: ${error.message}`);
+                    document.getElementById('updating-headers-status').style.display = 'none';
+                    document.getElementById('columns-success-status').style.display = 'none';
+                    document.getElementById('analyzing-grid-status').style.display = 'none';
+                } finally {
+                    confirmHeadersBtn.disabled = false;
+                    gridFillTriggered = false; // Allow retry if error
+                }
+            });
+
+            // Update Sheet with Grid Data
+            updateSheetBtn.addEventListener('click', async function() {
+                if (!validSheetId || !extractedData) {
+                    alert('Missing required data. Please verify the sheet and process the image first.');
+                    return;
+                }
+                
+                updateSheetBtn.disabled = true;
+                document.getElementById('updating-status').style.display = 'flex';
+                
+                try {
+                    const response = await fetch('/update-sheet', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            sheet_id: validSheetId,
+                            data: extractedData
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.error) {
+                        throw new Error(result.error);
+                    }
+                    
+                    resultMessage.innerHTML = `<div class="success">
+                        <h3>Success!</h3>
+                        <p>${result.message}</p>
+                    </div>`;
+                    showStep(5);
+                    
+                } catch (error) {
+                    resultMessage.innerHTML = `<div class="error">
+                        <h3>Error</h3>
+                        <p>${error.message}</p>
+                    </div>`;
+                    showStep(5);
+                } finally {
+                    updateSheetBtn.disabled = false;
+                    document.getElementById('updating-status').style.display = 'none';
+                }
+            });
+
+            // Start over button
+            startOverBtn.addEventListener('click', () => {
+                // Reset all states
+                validSheetId = null;
+                extractedData = null;
+                uploadedImage = null;
+                extractedHeaders = null;
+                
+                // Reset form elements
+                sheetIdInput.value = '';
+                sheetVerificationResult.innerHTML = '';
+                imageUpload.value = '';
+                imagePreviewContainer.style.display = 'none';
+                dropArea.style.display = 'block';
+                headersContainer.innerHTML = '';
+                contextTextarea.value = '';
+                dataPreviewContainer.style.display = 'none';
+                resultMessage.innerHTML = '';
+                
+                // Back to step 1
+                showStep(1);
+            });
+
+            // Initialize with step 1
+            showStep(1);
+        });
+    </script>
+</body>
+</html>
